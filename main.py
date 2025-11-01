@@ -7,10 +7,18 @@ from urllib.parse import urlparse
 from pathlib import Path
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.request import HTTPXRequest
 from dotenv import load_dotenv
 
 # بارگذاری متغیرهای محیطی از فایل .env
 load_dotenv()
+
+# تنظیمات پراکسی برای PythonAnywhere (اختیاری)
+PROXY_URL = os.getenv('PROXY_URL', None)  # مثال: http://proxy.server:3128
+# اگر می‌خواهید دانلود فایل هم از طریق پراکسی انجام شود (در صورتی که هاست مقصد در whitelist باشد) این را true کنید
+ALLOW_DOWNLOAD_VIA_PROXY = os.getenv('ALLOW_DOWNLOAD_VIA_PROXY', 'false').strip().lower() in ('1','true','yes','on')
+# اگر روی هاستی هستید که outbound محدود است (مثل PythonAnywhere Free)، دانلود محلی را غیرفعال کنید
+DIRECT_SEND_ONLY = os.getenv('DIRECT_SEND_ONLY', 'false').strip().lower() in ('1','true','yes','on')
 
 # تنظیمات لاگ
 logging.basicConfig(
@@ -27,6 +35,9 @@ API_HASH = os.getenv('API_HASH', 'b18441a1ff607e10a989891a5462e627')
 # پوشه موقت برای ذخیره فایل‌ها
 DOWNLOAD_FOLDER = "downloads"
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+
+# نکته: پراکسی فقط برای Telegram Bot API استفاده می‌شود
+# برای دانلود فایل‌ها از پراکسی استفاده نمی‌کنیم تا محدودیت whitelist نداشته باشیم
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -112,10 +123,29 @@ def create_progress_bar(percentage: float, length: int = 10) -> str:
 async def download_file(url: str, filename: str, status_message=None) -> tuple:
     """دانلود فایل از URL با نمایش پیشرفت"""
     try:
-        # ارسال درخواست HEAD برای دریافت اطلاعات فایل
-        head_response = requests.head(url, allow_redirects=True, timeout=10)
-        content_type = head_response.headers.get('content-type', '')
-        total_size = int(head_response.headers.get('content-length', 0))
+        # ایجاد session بدون پراکسی برای دانلود فایل
+        session = requests.Session()
+        session.trust_env = False  # نادیده گرفتن متغیرهای محیطی پراکسی
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119 Safari/537.36',
+            'Accept': '*/*',
+            'Connection': 'keep-alive',
+        })
+        proxies = {'http': PROXY_URL, 'https': PROXY_URL} if (PROXY_URL and ALLOW_DOWNLOAD_VIA_PROXY) else None
+
+        # ارسال درخواست HEAD برای دریافت اطلاعات فایل (در صورت امکان)
+        content_type = ''
+        total_size = 0
+        try:
+            head_response = session.head(url, allow_redirects=True, timeout=20)
+            content_type = head_response.headers.get('content-type', '') or ''
+            try:
+                total_size = int(head_response.headers.get('content-length', 0) or 0)
+            except Exception:
+                total_size = 0
+        except Exception:
+            # برخی سرورها به HEAD پاسخ نمی‌دهند؛ در ادامه از پاسخ GET استفاده می‌کنیم
+            pass
         
         # تعیین نام فایل با پسوند مناسب
         if not os.path.splitext(filename)[1]:
@@ -124,9 +154,39 @@ async def download_file(url: str, filename: str, status_message=None) -> tuple:
         
         filepath = os.path.join(DOWNLOAD_FOLDER, filename)
         
-        # دانلود فایل با نمایش پیشرفت
-        response = requests.get(url, stream=True, timeout=30)
-        response.raise_for_status()
+        # دانلود فایل با نمایش پیشرفت (ابتدا مستقیم؛ در صورت نیاز از پراکسی استفاده می‌شود)
+        try:
+            response = session.get(url, stream=True, timeout=60, allow_redirects=True)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            if proxies:
+                try:
+                    response = session.get(url, stream=True, timeout=60, allow_redirects=True, proxies=proxies)
+                    response.raise_for_status()
+                except requests.exceptions.RequestException:
+                    # اگر با پراکسی هم نشد، همان خطای اولیه را گزارش کن
+                    raise e
+            else:
+                # تلاش با HTTP به جای HTTPS در صورت خطای اتصال
+                if url.startswith('https://'):
+                    url_http = 'http://' + url[8:]
+                    try:
+                        response = session.get(url_http, stream=True, timeout=60, allow_redirects=True)
+                        response.raise_for_status()
+                        url = url_http  # برای ادامه پردازش
+                    except requests.exceptions.RequestException:
+                        raise e
+                else:
+                    raise e
+
+        # به‌روزرسانی اطلاعات از پاسخ GET در صورت نیاز
+        if not content_type:
+            content_type = response.headers.get('content-type', '') or ''
+        if total_size == 0:
+            try:
+                total_size = int(response.headers.get('content-length', 0) or 0)
+            except Exception:
+                total_size = 0
         
         downloaded_size = 0
         last_update_time = time.time()
@@ -139,21 +199,29 @@ async def download_file(url: str, filename: str, status_message=None) -> tuple:
                     
                     # به‌روزرسانی نوار پیشرفت هر 2 ثانیه
                     current_time = time.time()
-                    if total_size > 0 and status_message:
-                        percentage = (downloaded_size / total_size) * 100
+                    if status_message:
+                        if total_size > 0:
+                            percentage = (downloaded_size / total_size) * 100
+                        else:
+                            percentage = None
                         
                         # آپدیت هر 2 ثانیه یا در پایان دانلود
-                        if current_time - last_update_time >= 2 or percentage >= 100:
-                            progress_bar = create_progress_bar(percentage)
+                        if current_time - last_update_time >= 2 or (percentage is not None and percentage >= 100):
                             downloaded_mb = downloaded_size / (1024 * 1024)
-                            total_mb = total_size / (1024 * 1024)
-                            
                             try:
-                                await status_message.edit_text(
-                                    f"⏬ در حال دانلود...\n\n"
-                                    f"{progress_bar} {percentage:.1f}%\n\n"
-                                    f"📦 {downloaded_mb:.2f} MB / {total_mb:.2f} MB"
-                                )
+                                if percentage is not None:
+                                    progress_bar = create_progress_bar(percentage)
+                                    total_mb = total_size / (1024 * 1024)
+                                    await status_message.edit_text(
+                                        f"⏬ در حال دانلود...\n\n"
+                                        f"{progress_bar} {percentage:.1f}%\n\n"
+                                        f"📦 {downloaded_mb:.2f} MB / {total_mb:.2f} MB"
+                                    )
+                                else:
+                                    await status_message.edit_text(
+                                        f"⏬ در حال دانلود...\n\n"
+                                        f"📦 {downloaded_mb:.2f} MB"
+                                    )
                                 last_update_time = current_time
                             except Exception:
                                 # اگر خطای Rate Limit بود، نادیده بگیر
@@ -163,7 +231,10 @@ async def download_file(url: str, filename: str, status_message=None) -> tuple:
     
     except requests.exceptions.RequestException as e:
         logger.error(f"خطا در دانلود فایل: {e}")
-        return None, f"❌ خطا در دانلود فایل: {str(e)}", 0
+        friendly = str(e)
+        if 'Connection refused' in friendly or 'Errno 111' in friendly:
+            friendly = "اتصال به سرور فایل برقرار نشد (احتمالاً توسط هاست/فایروال مسدود شده است)."
+        return None, f"❌ خطا در دانلود فایل: {friendly}", 0
     except Exception as e:
         logger.error(f"خطای غیرمنتظره: {e}")
         return None, f"❌ خطای غیرمنتظره: {str(e)}", 0
@@ -181,14 +252,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # ارسال پیام در حال دانلود
-    status_message = await update.message.reply_text("⏳ در حال دانلود فایل...")
+    # پیام وضعیت
+    status_message = await update.message.reply_text("⏳ تلاش برای ارسال مستقیم توسط سرورهای تلگرام...")
     
     try:
-        # دانلود فایل
         url = message_text
         filename = f"file_{update.message.message_id}"
-        
+
+        # تلاش برای ارسال مستقیم توسط سرورهای تلگرام (بدون دانلود محلی)
+        try:
+            if is_video_file(url):
+                await update.message.reply_video(
+                    video=url,
+                    caption="📹 ویدیو (ارسال مستقیم توسط تلگرام)",
+                    supports_streaming=True
+                )
+            else:
+                await update.message.reply_document(
+                    document=url,
+                    caption="📄 فایل (ارسال مستقیم توسط تلگرام)"
+                )
+            await status_message.delete()
+            return
+        except Exception as direct_send_error:
+            logger.warning(f"ارسال مستقیم توسط تلگرام ناکام ماند: {direct_send_error}")
+            # اگر در محیط محدود هستیم، دانلود محلی را انجام ندهیم
+            if DIRECT_SEND_ONLY:
+                await status_message.edit_text(
+                    "❌ ارسال مستقیم توسط تلگرام ناموفق بود و دانلود محلی در این محیط مجاز نیست.\n"
+                    "لطفاً لینک دیگری ارسال کنید یا متغیر DIRECT_SEND_ONLY را غیرفعال کنید."
+                )
+                return
+            await status_message.edit_text("⏬ دانلود محلی آغاز شد...")
+
+        # دانلود محلی با نوار پیشرفت
         filepath, result, total_size = await download_file(url, filename, status_message)
         
         if filepath is None:
@@ -266,8 +363,22 @@ def main():
     except ImportError:
         print("⚠️ keep_alive.py یافت نشد - در حالت عادی اجرا می‌شود")
     
-    # ساخت Application
-    application = Application.builder().token(BOT_TOKEN).build()
+    # ساخت Application با پشتیبانی از پراکسی
+    app_builder = Application.builder().token(BOT_TOKEN)
+    
+    # اگر پراکسی تنظیم شده، به telegram bot اضافه کن
+    if PROXY_URL:
+        from telegram.request import HTTPXRequest
+        request = HTTPXRequest(
+            proxy_url=PROXY_URL,
+            connection_pool_size=8,
+            connect_timeout=20.0,
+            read_timeout=20.0
+        )
+        app_builder.request(request)
+        print(f"🌐 پراکسی برای Telegram Bot تنظیم شد: {PROXY_URL}")
+    
+    application = app_builder.build()
     
     # اضافه کردن هندلرها
     application.add_handler(CommandHandler("start", start))

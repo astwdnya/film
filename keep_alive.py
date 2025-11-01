@@ -29,7 +29,13 @@ def ping():
 def run():
     """اجرای Flask در پورت مشخص شده"""
     port = int(os.getenv('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    try:
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    except OSError as e:
+        if "Address already in use" in str(e):
+            print(f"⚠️ پورت {port} در حال استفاده است - Flask server قبلاً اجرا شده")
+        else:
+            raise
 
 def keep_alive():
     """اجرای Flask در یک Thread جداگانه"""
