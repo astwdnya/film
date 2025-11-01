@@ -10,6 +10,8 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 from dotenv import load_dotenv
+from pyrogram import Client
+import asyncio
 
 # بارگذاری متغیرهای محیطی از فایل .env
 load_dotenv()
@@ -28,14 +30,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# توکن ربات تلگرام از فایل .env یا مقدار پیش‌فرض
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8289666254:AAEIvyX0orV6tijM1ATjt_qHppICiNXxOlc')
-API_ID = os.getenv('API_ID', '2040')
-API_HASH = os.getenv('API_HASH', 'b18441a1ff607e10a989891a5462e627')
+# توکن ربات تلگرام از فایل .env (بدون مقدار پیش‌فرض برای امنیت)
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+API_ID = os.getenv('API_ID')
+API_HASH = os.getenv('API_HASH')
 
 # پوشه موقت برای ذخیره فایل‌ها
 DOWNLOAD_FOLDER = "downloads"
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+
+# ایجاد Pyrogram client برای فایل‌های بزرگ (بیشتر از 50MB)
+pyrogram_client = None
+
+def get_pyrogram_client():
+    """ایجاد یا برگرداندن Pyrogram client"""
+    global pyrogram_client
+    if pyrogram_client is None and API_ID and API_HASH and BOT_TOKEN:
+        pyrogram_client = Client(
+            "file_downloader_bot",
+            api_id=int(API_ID),
+            api_hash=API_HASH,
+            bot_token=BOT_TOKEN,
+            workdir=DOWNLOAD_FOLDER
+        )
+    return pyrogram_client
 
 # نکته: پراکسی فقط برای Telegram Bot API استفاده می‌شود
 # برای دانلود فایل‌ها از پراکسی استفاده نمی‌کنیم تا محدودیت whitelist نداشته باشیم
@@ -150,7 +168,7 @@ async def download_video_ytdlp(url: str, status_message=None) -> tuple:
         output_template = os.path.join(DOWNLOAD_FOLDER, '%(title)s.%(ext)s')
         
         ydl_opts = {
-            'format': 'best[height<=720]/best',  # کیفیت 720p یا بهترین موجود
+            'format': 'best[height<=720]/best',  # کیفیت 720p یا بهترین موجود (حداکثر 2GB با Pyrogram)
             'outtmpl': output_template,
             'quiet': True,
             'no_warnings': True,
@@ -429,6 +447,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size = os.path.getsize(filepath)
         file_size_mb = file_size / (1024 * 1024)
         
+        # بررسی محدودیت 2 گیگابایت (با Pyrogram)
+        if file_size_mb > 2000:
+            await status_message.edit_text(
+                f"❌ فایل خیلی بزرگه! ({file_size_mb:.2f} MB = {file_size_mb/1024:.2f} GB)\n\n"
+                f"حداکثر سایز مجاز ۲ گیگابایت هست.\n"
+                f"لطفاً ویدیو با کیفیت پایین‌تر یا فایل کوچک‌تر ارسال کنید."
+            )
+            os.remove(filepath)
+            return
+        
         # آپدیت پیام وضعیت
         await status_message.edit_text(
             f"✅ دانلود کامل شد!\n"
@@ -436,21 +464,70 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏫ در حال ارسال..."
         )
         
-        # ارسال فایل
-        with open(filepath, 'rb') as f:
-            if is_video_file(filepath, content_type):
-                # ارسال به صورت ویدیو
-                await update.message.reply_video(
-                    video=f,
-                    caption=f"📹 ویدیو دانلود شده\n📦 حجم: {file_size_mb:.2f} MB",
-                    supports_streaming=True
-                )
-            else:
-                # ارسال به صورت سند
-                await update.message.reply_document(
-                    document=f,
-                    caption=f"📄 فایل دانلود شده\n📦 حجم: {file_size_mb:.2f} MB"
-                )
+        # انتخاب روش ارسال بر اساس سایز فایل
+        if file_size_mb > 50:
+            # استفاده از Pyrogram برای فایل‌های بزرگ (50MB تا 2GB)
+            await status_message.edit_text(
+                f"✅ دانلود کامل شد!\n"
+                f"📦 حجم: {file_size_mb:.2f} MB\n"
+                f"⏫ در حال ارسال (Pyrogram برای فایل بزرگ)..."
+            )
+            
+            try:
+                client = get_pyrogram_client()
+                if client:
+                    await client.start()
+                    
+                    # دریافت chat_id از update
+                    chat_id = update.message.chat_id
+                    
+                    if is_video_file(filepath, content_type):
+                        # ارسال ویدیو
+                        await client.send_video(
+                            chat_id=chat_id,
+                            video=filepath,
+                            caption=f"📹 ویدیو دانلود شده\n📦 حجم: {file_size_mb:.2f} MB",
+                            supports_streaming=True
+                        )
+                    else:
+                        # ارسال سند
+                        await client.send_document(
+                            chat_id=chat_id,
+                            document=filepath,
+                            caption=f"📄 فایل دانلود شده\n📦 حجم: {file_size_mb:.2f} MB"
+                        )
+                    
+                    await client.stop()
+                    logger.info(f"فایل بزرگ {filepath} با Pyrogram ارسال شد")
+                else:
+                    raise Exception("Pyrogram client موجود نیست")
+            except Exception as e:
+                logger.error(f"خطا در ارسال با Pyrogram: {e}")
+                raise
+        else:
+            # استفاده از Bot API معمولی برای فایل‌های کوچک (زیر 50MB)
+            with open(filepath, 'rb') as f:
+                if is_video_file(filepath, content_type):
+                    # ارسال به صورت ویدیو
+                    await update.message.reply_video(
+                        video=f,
+                        caption=f"📹 ویدیو دانلود شده\n📦 حجم: {file_size_mb:.2f} MB",
+                        supports_streaming=True,
+                        read_timeout=300,
+                        write_timeout=300,
+                        connect_timeout=30,
+                        pool_timeout=30
+                    )
+                else:
+                    # ارسال به صورت سند
+                    await update.message.reply_document(
+                        document=f,
+                        caption=f"📄 فایل دانلود شده\n📦 حجم: {file_size_mb:.2f} MB",
+                        read_timeout=300,
+                        write_timeout=300,
+                        connect_timeout=30,
+                        pool_timeout=30
+                    )
         
         # حذف پیام وضعیت
         await status_message.delete()
@@ -494,20 +571,27 @@ def main():
     except ImportError:
         print("⚠️ keep_alive.py یافت نشد - در حالت عادی اجرا می‌شود")
     
-    # ساخت Application با پشتیبانی از پراکسی
+    # ساخت Application با پشتیبانی از پراکسی و تایم‌اوت بالا برای آپلود فایل‌های بزرگ
     app_builder = Application.builder().token(BOT_TOKEN)
     
-    # اگر پراکسی تنظیم شده، به telegram bot اضافه کن
+    # تنظیم HTTPXRequest با تایم‌اوت بالا برای آپلود فایل‌های بزرگ
+    from telegram.request import HTTPXRequest
+    request_kwargs = {
+        'connection_pool_size': 8,
+        'connect_timeout': 30.0,
+        'read_timeout': 300.0,
+        'write_timeout': 300.0,
+        'pool_timeout': 30.0
+    }
+    
+    # اگر پراکسی تنظیم شده، به تنظیمات اضافه کن
     if PROXY_URL:
-        from telegram.request import HTTPXRequest
-        request = HTTPXRequest(
-            proxy_url=PROXY_URL,
-            connection_pool_size=8,
-            connect_timeout=20.0,
-            read_timeout=20.0
-        )
-        app_builder.request(request)
+        request_kwargs['proxy_url'] = PROXY_URL
         print(f"🌐 پراکسی برای Telegram Bot تنظیم شد: {PROXY_URL}")
+    
+    request = HTTPXRequest(**request_kwargs)
+    app_builder.request(request)
+    print(f"✅ تایم‌اوت برای آپلود فایل‌های بزرگ تنظیم شد (300 ثانیه)")
     
     application = app_builder.build()
     

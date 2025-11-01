@@ -4,3 +4,12 @@ python-dotenv==1.0.0
 flask==3.0.0
 gunicorn==21.2.0
 yt-dlp==2024.10.7
+flask
+gunicorn
+python-dotenv
+python-telegram-bot
+requests
+telegram
+yt-dlp
+pyrogram
+tgcrypto

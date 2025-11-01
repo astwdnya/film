@@ -28,7 +28,7 @@ def ping():
 
 def run():
     """اجرای Flask در پورت مشخص شده"""
-    port = int(os.getenv('PORT', 10000))
+    port = int(os.getenv('PORT', 5000))
     try:
         app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
     except OSError as e:
@@ -42,4 +42,4 @@ def keep_alive():
     t = Thread(target=run)
     t.daemon = True
     t.start()
-    print(f"✅ Flask server started on port {os.getenv('PORT', 10000)}")
+    print(f"✅ Flask server started on port {os.getenv('PORT', 5000)}")
