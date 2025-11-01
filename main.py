@@ -3,6 +3,7 @@ import logging
 import mimetypes
 import requests
 import time
+import yt_dlp
 from urllib.parse import urlparse
 from pathlib import Path
 from telegram import Update
@@ -45,11 +46,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = (
         "سلام! 👋\n\n"
         "من یک ربات دانلود و ارسال فایل هستم.\n\n"
-        "کافیست لینک دانلود فایل را برای من ارسال کنید.\n"
-        "من فایل را دانلود کرده و برای شما ارسال می‌کنم.\n\n"
-        "📹 فایل‌های ویدیویی به صورت ویدیو\n"
+        "🎬 دانلود از سایت‌های ویدیویی:\n"
+        "• YouTube, Vimeo, Dailymotion\n"
+        "• Pornhub, Xvideos, Xnxx\n"
+        "• Twitter, Instagram, TikTok\n"
+        "• و بیش از 1000 سایت دیگر!\n\n"
+        "📥 دانلود فایل مستقیم:\n"
+        "• هر لینک دانلود مستقیم\n\n"
+        "📹 ویدیوها به صورت ویدیو\n"
         "📄 سایر فایل‌ها به صورت سند\n\n"
-        "برای شروع، یک لینک دانلود ارسال کنید!"
+        "برای شروع، یک لینک ارسال کنید!"
     )
     await update.message.reply_text(welcome_message)
 
@@ -58,10 +64,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """راهنمای استفاده"""
     help_text = (
         "📖 راهنمای استفاده:\n\n"
-        "1️⃣ لینک دانلود فایل را ارسال کنید\n"
-        "2️⃣ صبر کنید تا فایل دانلود شود\n"
-        "3️⃣ فایل برای شما ارسال می‌شود\n\n"
-        "✅ بدون محدودیت حجم فایل\n\n"
+        "🎬 دانلود از سایت‌های ویدیویی:\n"
+        "فقط لینک صفحه ویدیو را ارسال کنید\n"
+        "مثال: https://www.youtube.com/watch?v=...\n\n"
+        "📥 دانلود فایل مستقیم:\n"
+        "لینک دانلود مستقیم فایل را ارسال کنید\n"
+        "مثال: https://example.com/file.zip\n\n"
+        "✅ بدون محدودیت حجم فایل\n"
+        "✅ پشتیبانی از 1000+ سایت\n\n"
         "دستورات:\n"
         "/start - شروع\n"
         "/help - راهنما"
@@ -118,6 +128,113 @@ def create_progress_bar(percentage: float, length: int = 10) -> str:
     filled = int(length * percentage / 100)
     bar = '█' * filled + '░' * (length - filled)
     return bar
+
+
+def is_video_site(url: str) -> bool:
+    """بررسی اینکه URL از سایت‌های ویدیویی است"""
+    video_sites = [
+        'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com',
+        'xvideos.com', 'pornhub.com', 'xnxx.com', 'redtube.com',
+        'xhamster.com', 'spankbang.com', 'eporner.com', 'youporn.com',
+        'twitter.com', 'x.com', 'instagram.com', 'tiktok.com',
+        'facebook.com', 'twitch.tv', 'reddit.com'
+    ]
+    url_lower = url.lower()
+    return any(site in url_lower for site in video_sites)
+
+
+async def download_video_ytdlp(url: str, status_message=None) -> tuple:
+    """دانلود ویدیو با yt-dlp از سایت‌های مختلف"""
+    try:
+        # تنظیمات yt-dlp
+        output_template = os.path.join(DOWNLOAD_FOLDER, '%(title)s.%(ext)s')
+        
+        ydl_opts = {
+            'format': 'best[height<=720]/best',  # کیفیت 720p یا بهترین موجود
+            'outtmpl': output_template,
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'nocheckcertificate': True,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        }
+        
+        # اگر پراکسی تنظیم شده و مجاز است
+        if PROXY_URL and ALLOW_DOWNLOAD_VIA_PROXY:
+            ydl_opts['proxy'] = PROXY_URL
+        
+        last_update_time = [time.time()]  # استفاده از list برای mutable در nested function
+        
+        def progress_hook(d):
+            """نمایش پیشرفت دانلود"""
+            if d['status'] == 'downloading' and status_message:
+                current_time = time.time()
+                if current_time - last_update_time[0] >= 2:
+                    try:
+                        downloaded = d.get('downloaded_bytes', 0)
+                        total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+                        
+                        if total > 0:
+                            percentage = (downloaded / total) * 100
+                            progress_bar = create_progress_bar(percentage)
+                            downloaded_mb = downloaded / (1024 * 1024)
+                            total_mb = total / (1024 * 1024)
+                            speed = d.get('speed', 0)
+                            speed_mb = speed / (1024 * 1024) if speed else 0
+                            
+                            import asyncio
+                            asyncio.create_task(status_message.edit_text(
+                                f"⏬ در حال دانلود ویدیو...\n\n"
+                                f"{progress_bar} {percentage:.1f}%\n\n"
+                                f"📦 {downloaded_mb:.2f} MB / {total_mb:.2f} MB\n"
+                                f"⚡ سرعت: {speed_mb:.2f} MB/s"
+                            ))
+                        else:
+                            downloaded_mb = downloaded / (1024 * 1024)
+                            import asyncio
+                            asyncio.create_task(status_message.edit_text(
+                                f"⏬ در حال دانلود ویدیو...\n\n"
+                                f"📦 {downloaded_mb:.2f} MB"
+                            ))
+                        
+                        last_update_time[0] = current_time
+                    except Exception:
+                        pass
+        
+        ydl_opts['progress_hooks'] = [progress_hook]
+        
+        # دانلود ویدیو
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            if status_message:
+                await status_message.edit_text("🔍 در حال دریافت اطلاعات ویدیو...")
+            
+            info = ydl.extract_info(url, download=True)
+            
+            # پیدا کردن فایل دانلود شده
+            if 'requested_downloads' in info and info['requested_downloads']:
+                filepath = info['requested_downloads'][0]['filepath']
+            else:
+                # جستجوی فایل در پوشه downloads
+                title = info.get('title', 'video')
+                ext = info.get('ext', 'mp4')
+                filepath = os.path.join(DOWNLOAD_FOLDER, f"{title}.{ext}")
+            
+            if not os.path.exists(filepath):
+                # جستجوی فایل با الگوی مشابه
+                import glob
+                pattern = os.path.join(DOWNLOAD_FOLDER, f"*{info.get('id', '')}*")
+                files = glob.glob(pattern)
+                if files:
+                    filepath = files[0]
+                else:
+                    raise FileNotFoundError("فایل دانلود شده یافت نشد")
+            
+            file_size = os.path.getsize(filepath)
+            return filepath, 'video/mp4', file_size
+    
+    except Exception as e:
+        logger.error(f"خطا در دانلود ویدیو با yt-dlp: {e}")
+        return None, f"❌ خطا در دانلود ویدیو: {str(e)}", 0
 
 
 async def download_file(url: str, filename: str, status_message=None) -> tuple:
@@ -253,40 +370,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # پیام وضعیت
-    status_message = await update.message.reply_text("⏳ تلاش برای ارسال مستقیم توسط سرورهای تلگرام...")
+    status_message = await update.message.reply_text("⏳ در حال پردازش...")
     
     try:
         url = message_text
         filename = f"file_{update.message.message_id}"
-
-        # تلاش برای ارسال مستقیم توسط سرورهای تلگرام (بدون دانلود محلی)
-        try:
-            if is_video_file(url):
-                await update.message.reply_video(
-                    video=url,
-                    caption="📹 ویدیو (ارسال مستقیم توسط تلگرام)",
-                    supports_streaming=True
-                )
-            else:
-                await update.message.reply_document(
-                    document=url,
-                    caption="📄 فایل (ارسال مستقیم توسط تلگرام)"
-                )
-            await status_message.delete()
-            return
-        except Exception as direct_send_error:
-            logger.warning(f"ارسال مستقیم توسط تلگرام ناکام ماند: {direct_send_error}")
-            # اگر در محیط محدود هستیم، دانلود محلی را انجام ندهیم
+        
+        # بررسی اینکه آیا از سایت‌های ویدیویی است
+        if is_video_site(url):
+            # استفاده از yt-dlp برای دانلود ویدیو
             if DIRECT_SEND_ONLY:
                 await status_message.edit_text(
-                    "❌ ارسال مستقیم توسط تلگرام ناموفق بود و دانلود محلی در این محیط مجاز نیست.\n"
-                    "لطفاً لینک دیگری ارسال کنید یا متغیر DIRECT_SEND_ONLY را غیرفعال کنید."
+                    "❌ دانلود ویدیو از این سایت در محیط محدود امکان‌پذیر نیست.\n"
+                    "لطفاً متغیر DIRECT_SEND_ONLY را غیرفعال کنید."
                 )
                 return
-            await status_message.edit_text("⏬ دانلود محلی آغاز شد...")
+            
+            await status_message.edit_text("🎬 شناسایی سایت ویدیویی - استفاده از yt-dlp...")
+            filepath, result, total_size = await download_video_ytdlp(url, status_message)
+        else:
+            # تلاش برای ارسال مستقیم توسط سرورهای تلگرام (بدون دانلود محلی)
+            try:
+                await status_message.edit_text("⏳ تلاش برای ارسال مستقیم توسط تلگرام...")
+                if is_video_file(url):
+                    await update.message.reply_video(
+                        video=url,
+                        caption="📹 ویدیو (ارسال مستقیم توسط تلگرام)",
+                        supports_streaming=True
+                    )
+                else:
+                    await update.message.reply_document(
+                        document=url,
+                        caption="📄 فایل (ارسال مستقیم توسط تلگرام)"
+                    )
+                await status_message.delete()
+                return
+            except Exception as direct_send_error:
+                logger.warning(f"ارسال مستقیم توسط تلگرام ناکام ماند: {direct_send_error}")
+                # اگر در محیط محدود هستیم، دانلود محلی را انجام ندهیم
+                if DIRECT_SEND_ONLY:
+                    await status_message.edit_text(
+                        "❌ ارسال مستقیم توسط تلگرام ناموفق بود و دانلود محلی در این محیط مجاز نیست.\n"
+                        "لطفاً لینک دیگری ارسال کنید یا متغیر DIRECT_SEND_ONLY را غیرفعال کنید."
+                    )
+                    return
+                await status_message.edit_text("⏬ دانلود محلی آغاز شد...")
 
-        # دانلود محلی با نوار پیشرفت
-        filepath, result, total_size = await download_file(url, filename, status_message)
+            # دانلود محلی با نوار پیشرفت
+            filepath, result, total_size = await download_file(url, filename, status_message)
         
         if filepath is None:
             await status_message.edit_text(result)
