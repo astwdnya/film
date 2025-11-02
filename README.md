@@ -7,6 +7,7 @@
 - 🎬 **دانلود از سایت‌های ویدیویی** (با yt-dlp):
   - YouTube, Vimeo, Dailymotion
   - Pornhub, Xvideos, Xnxx, Redtube
+  - Porn300, Xgroovy, Xhamster, Spankbang
   - Twitter, Instagram, TikTok, Facebook
   - و بیش از 1000 سایت دیگر!
 - 📥 **دانلود فایل مستقیم** از هر لینک
@@ -79,10 +80,12 @@ PROXY_URL=http://proxy.server:3128
 ارسال لینک: https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
-### دانلود از Pornhub/Xvideos
+### دانلود از Pornhub/Xvideos/Porn300
 ```
 ارسال لینک: https://www.pornhub.com/view_video.php?viewkey=...
 ارسال لینک: https://www.xvideos.com/video...
+ارسال لینک: https://www.porn300.com/video/...
+ارسال لینک: https://xgroovy.com/gifs/397623/...
 ```
 
 ### دانلود از Twitter/Instagram

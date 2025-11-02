@@ -66,7 +66,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "من یک ربات دانلود و ارسال فایل هستم.\n\n"
         "🎬 دانلود از سایت‌های ویدیویی:\n"
         "• YouTube, Vimeo, Dailymotion\n"
-        "• Pornhub, Xvideos, Xnxx\n"
+        "• Pornhub, Xvideos, Xnxx, Porn300\n"
+        "• Xgroovy, Redtube, Xhamster\n"
         "• Twitter, Instagram, TikTok\n"
         "• و بیش از 1000 سایت دیگر!\n\n"
         "📥 دانلود فایل مستقیم:\n"
@@ -154,6 +155,7 @@ def is_video_site(url: str) -> bool:
         'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com',
         'xvideos.com', 'pornhub.com', 'xnxx.com', 'redtube.com',
         'xhamster.com', 'spankbang.com', 'eporner.com', 'youporn.com',
+        'porn300.com', 'xgroovy.com', 'txxx.com', 'hclips.com',
         'twitter.com', 'x.com', 'instagram.com', 'tiktok.com',
         'facebook.com', 'twitch.tv', 'reddit.com'
     ]
